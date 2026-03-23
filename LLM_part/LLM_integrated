@@ -8,6 +8,7 @@ os.environ["PYTHONUSERBASE"] = "/data/playlist_lib/.local"
 os.environ["PATH"] = os.environ["PYTHONUSERBASE"] + "/bin:" + os.environ.get("PATH", "")
 os.environ["LD_LIBRARY_PATH"] = "/homes/vellard/.local/lib/python3.10/site-packages/cusparselt/lib:" + os.environ.get("LD_LIBRARY_PATH", "")
 
+import argparse
 import torch
 import pickle
 import json
@@ -158,20 +159,25 @@ def get_llm_recommendations(playlist_title, candidates, top_n=10, model_key='lla
     return recs
 
 # 8) Main
-def main():
-    base = "/home/vellard/playlist_continuation"
-    tok, mdl = load_fine_tuned_model(base + "/fine_tuned_model_no_scheduler_2")
-    print("Model loaded.")
-    embeds = load_playlist_embeddings(base + "/playlists_embeddings/final_embeddings/playlists_embeddings_scheduler.pkl")
-    tracks = load_playlist_tracks_with_artists("/data/csvs/items.csv", "/data/csvs/tracks.csv")
-    titles = load_playlist_titles("/data/csvs/playlists.csv")
-    kv = load_embeddings_to_keyedvectors(embeds)
+def recommend(playlist_name, kv, tokenizer, model, tracks, titles,
+             top_k_similar=50, top_n_recs=10, llm_model_key='llama32k'):
+    """Generate song recommendations for a playlist title.
 
-    name = input("Enter playlist name: ").strip()
-    sim = find_similar_playlists(name, kv, tok, mdl, 50)
-    print("Similar playlists:")
-    for i, (pid, score) in enumerate(sim, 1):
-        print(f"{i}. {titles.get(str(pid), '?')} ({score:.4f})")
+    Args:
+        playlist_name: Title of the query playlist.
+        kv: Gensim KeyedVectors built from precomputed playlist embeddings.
+        tokenizer: Fine-tuned model tokenizer.
+        model: Fine-tuned SentenceBERT model.
+        tracks: Dict mapping pid -> list of {track_name, artist_name} dicts.
+        titles: Dict mapping pid -> playlist title string.
+        top_k_similar: Number of similar playlists to retrieve.
+        top_n_recs: Number of final song recommendations.
+        llm_model_key: Key into available_llms selecting which LLM reranker to use.
+
+    Returns:
+        List of dicts with 'song' and 'artist' keys.
+    """
+    sim = find_similar_playlists(playlist_name, kv, tokenizer, model, top_k_similar)
 
     cands, seen = [], set()
     for pid, _ in sim:
@@ -181,13 +187,48 @@ def main():
                 seen.add(key)
                 cands.append(key)
 
-    print(f"Collected {len(cands)} candidate songs.")
-    print(f"Sample: {cands[:5]}")
+    return get_llm_recommendations(playlist_name, cands, top_n=top_n_recs, model_key=llm_model_key)
 
-    recs = get_llm_recommendations(name, cands, top_n=10, model_key='llama32k')
+
+def main():
+    parser = argparse.ArgumentParser(description="LLM-integrated playlist recommender.")
+    parser.add_argument("--model_dir", type=str,
+                        default="/home/vellard/playlist_continuation/fine_tuned_model_no_scheduler_2",
+                        help="Path to the fine-tuned SentenceBERT model directory.")
+    parser.add_argument("--embeddings_file", type=str,
+                        default="/home/vellard/playlist_continuation/playlists_embeddings/final_embeddings/playlists_embeddings_scheduler.pkl",
+                        help="Path to the precomputed playlist embeddings pickle.")
+    parser.add_argument("--items_csv", type=str, default="/data/csvs/items.csv")
+    parser.add_argument("--tracks_csv", type=str, default="/data/csvs/tracks.csv")
+    parser.add_argument("--playlists_csv", type=str, default="/data/csvs/playlists.csv")
+    parser.add_argument("--top_k_similar", type=int, default=50,
+                        help="Number of similar playlists to retrieve.")
+    parser.add_argument("--top_n_recs", type=int, default=10,
+                        help="Number of final song recommendations to return.")
+    parser.add_argument("--llm_model_key", type=str, default="llama32k",
+                        choices=list(available_llms.keys()),
+                        help="Key into available_llms dict selecting which LLM to use.")
+    parser.add_argument("--playlist_name", type=str, default=None,
+                        help="Playlist title to generate recommendations for. If omitted, prompts interactively.")
+    args = parser.parse_args()
+
+    tok, mdl = load_fine_tuned_model(args.model_dir)
+    print("Model loaded.")
+    embeds = load_playlist_embeddings(args.embeddings_file)
+    tracks = load_playlist_tracks_with_artists(args.items_csv, args.tracks_csv)
+    titles = load_playlist_titles(args.playlists_csv)
+    kv = load_embeddings_to_keyedvectors(embeds)
+
+    name = args.playlist_name or input("Enter playlist name: ").strip()
+    recs = recommend(name, kv, tok, mdl, tracks, titles,
+                     top_k_similar=args.top_k_similar,
+                     top_n_recs=args.top_n_recs,
+                     llm_model_key=args.llm_model_key)
     print("Recommendations:")
     for i, r in enumerate(recs, 1):
         print(f"{i}. {r['song']} – {r['artist']}")
 
+
 if __name__ == '__main__':
     main()
+
