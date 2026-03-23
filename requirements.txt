@@ -13,3 +13,4 @@ anthropic
 google-genai
 PyYAML
 evaluate
+datasets
