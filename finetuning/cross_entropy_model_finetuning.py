@@ -3,7 +3,7 @@ import json
 import pandas as pd
 import evaluate
 from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer, EvalPrediction
 
 
 def run(train_csv, val_csv, output_dir,
@@ -58,7 +58,7 @@ def run(train_csv, val_csv, output_dir,
         num_train_epochs=epochs,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_strategy="epoch",
         learning_rate=learning_rate,
         weight_decay=0.01,
@@ -70,10 +70,13 @@ def run(train_csv, val_csv, output_dir,
 
     metric = evaluate.load("accuracy")
 
-    def compute_metrics(eval_pred):
+    def compute_metrics(eval_pred: EvalPrediction) -> dict:
         logits, labels = eval_pred
+        if isinstance(logits, tuple):
+            logits = logits[0]
         predictions = logits.argmax(axis=-1)
-        return metric.compute(predictions=predictions, references=labels)
+        results = metric.compute(predictions=predictions, references=labels)
+        return results if results is not None else {}
 
     trainer = Trainer(
         model=model,
